@@ -1,0 +1,1319 @@
+import React, { useEffect, useMemo, useState } from 'react';
+import {
+  ActivityIndicator,
+  Modal,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
+import {
+  AlertCircle,
+  ArrowLeft,
+  BookOpen,
+  Check,
+  Eye,
+  Frown,
+  Mic,
+  PartyPopper,
+  RotateCcw,
+  Sparkles,
+  Square,
+  Trophy,
+  X,
+} from 'lucide-react-native';
+
+import { askHomeworkHelper } from '../services/aiService';
+import { audioRecordingBridge } from '../services/nativeBridges';
+import { Question } from '../types/app';
+
+interface TakeQuizScreenProps {
+  questions: Question[];
+  subjectName: string;
+  onClose: () => void;
+  onFinish?: (result: { score: number; total: number; percentage: number }) => void;
+}
+
+type ResultState = 'correct' | 'incorrect';
+type ViewMode = 'quiz' | 'score' | 'review';
+
+const AUDIO_TYPES = new Set(['SHORT_ANSWER', 'ESSAY']);
+
+export function TakeQuizScreen({
+  questions: sourceQuestions,
+  subjectName,
+  onClose,
+  onFinish,
+}: TakeQuizScreenProps) {
+  const questions = useMemo(() => sourceQuestions, [sourceQuestions]);
+
+  const [currentIndex, setCurrentIndex] = useState(0);
+  const [answers, setAnswers] = useState<Record<number, string>>({});
+  const [results, setResults] = useState<Record<number, ResultState>>({});
+  const [feedback, setFeedback] = useState<'correct' | 'incorrect' | null>(null);
+  const [viewMode, setViewMode] = useState<ViewMode>('quiz');
+  const [isGrading, setIsGrading] = useState(false);
+  const [isRecording, setIsRecording] = useState(false);
+  const [isTranscribing, setIsTranscribing] = useState(false);
+  const [timeLeft, setTimeLeft] = useState(10);
+  const [recordedAudioPath, setRecordedAudioPath] = useState<string | null>(null);
+  const [voiceError, setVoiceError] = useState<string | null>(null);
+  const [explanationModal, setExplanationModal] = useState<{
+    isOpen: boolean;
+    isLoading: boolean;
+    text: string;
+  } | null>(null);
+
+  const currentQuestion = questions[currentIndex] ?? null;
+
+  useEffect(() => {
+    setCurrentIndex(0);
+    setAnswers({});
+    setResults({});
+    setFeedback(null);
+    setViewMode('quiz');
+    setExplanationModal(null);
+  }, [questions, subjectName]);
+
+  useEffect(() => {
+    setIsRecording(false);
+    setIsTranscribing(false);
+    setTimeLeft(10);
+    setRecordedAudioPath(null);
+    setVoiceError(null);
+  }, [currentIndex, viewMode]);
+
+  useEffect(() => {
+    if (!isRecording || timeLeft <= 0) {
+      return undefined;
+    }
+
+    const timer = setInterval(() => {
+      setTimeLeft(prev => prev - 1);
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, [isRecording, timeLeft]);
+
+  useEffect(() => {
+    if (!isRecording || timeLeft > 0) {
+      return;
+    }
+
+    audioRecordingBridge
+      .stopRecording()
+      .then(path => {
+        setRecordedAudioPath(path);
+        setIsRecording(false);
+        setIsTranscribing(true);
+      })
+      .catch(() => {
+        setIsRecording(false);
+        setIsTranscribing(true);
+      });
+  }, [isRecording, timeLeft]);
+
+  useEffect(() => {
+    if (!isTranscribing) {
+      return undefined;
+    }
+
+    let active = true;
+    const timer = setTimeout(() => {
+      audioRecordingBridge
+        .transcribeAnswer(currentIndex, recordedAudioPath)
+        .then(transcript => {
+          if (!active) {
+            return;
+          }
+
+          setAnswers(prev => ({
+            ...prev,
+            [currentIndex]: transcript,
+          }));
+          setRecordedAudioPath(null);
+          setVoiceError(null);
+          setIsTranscribing(false);
+          setTimeLeft(10);
+        })
+        .catch(() => {
+          if (!active) {
+            return;
+          }
+
+          setVoiceError('Failed to transcribe audio. Please try again.');
+          setIsTranscribing(false);
+        });
+    }, 1200);
+
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
+  }, [currentIndex, isTranscribing, recordedAudioPath]);
+
+  if (!currentQuestion) {
+    return (
+      <View style={styles.quizBackdrop}>
+        <View style={styles.quizSheet}>
+          <View style={styles.quizHeader}>
+            <Pressable onPress={onClose} style={styles.quizBackButton}>
+              <ArrowLeft color="#9CA3AF" size={24} strokeWidth={2.4} />
+            </Pressable>
+            <View style={styles.quizHeaderSpacer} />
+          </View>
+          <View style={styles.emptyState}>
+            <BookOpen color="#CBD5E1" size={44} strokeWidth={2} />
+            <Text style={styles.emptyTitle}>No quiz available</Text>
+            <Text style={styles.emptyBody}>
+              Add quiz questions from published lessons or generate them first.
+            </Text>
+          </View>
+        </View>
+      </View>
+    );
+  }
+
+  function setAnswer(value: string) {
+    if (!feedback) {
+      setAnswers(prev => ({ ...prev, [currentIndex]: value }));
+    }
+  }
+
+  async function startRecording() {
+    const path = await audioRecordingBridge.startRecording();
+    if (path === null && audioRecordingBridge.state === 'android_native') {
+      setVoiceError('Could not access microphone. Please allow permissions.');
+      return;
+    }
+
+    setVoiceError(null);
+    setRecordedAudioPath(path);
+    setIsRecording(true);
+    setTimeLeft(10);
+  }
+
+  async function stopRecording() {
+    const path = await audioRecordingBridge.stopRecording();
+    setVoiceError(null);
+    setRecordedAudioPath(path || recordedAudioPath);
+    setIsRecording(false);
+    setIsTranscribing(true);
+  }
+
+  function handleRedo() {
+    setAnswers(prev => {
+      const next = { ...prev };
+      delete next[currentIndex];
+      return next;
+    });
+  }
+
+  function checkAnswer() {
+    const userAnswer = answers[currentIndex];
+    if (!userAnswer) {
+      return;
+    }
+
+    if (currentQuestion.type === 'MCQ' || currentQuestion.type === 'TRUE_FALSE') {
+      const isCorrect =
+        String(userAnswer).trim().toLowerCase() ===
+        String(currentQuestion.correctAnswer).trim().toLowerCase();
+      setFeedback(isCorrect ? 'correct' : 'incorrect');
+      setResults(prev => ({
+        ...prev,
+        [currentIndex]: isCorrect ? 'correct' : 'incorrect',
+      }));
+      return;
+    }
+
+    setIsGrading(true);
+    setTimeout(() => {
+      const isCorrect =
+        currentQuestion.type === 'SHORT_ANSWER'
+          ? userAnswer.trim().toLowerCase() ===
+            String(currentQuestion.correctAnswer).trim().toLowerCase()
+          : userAnswer.trim().length > 10;
+
+      setFeedback(isCorrect ? 'correct' : 'incorrect');
+      setResults(prev => ({
+        ...prev,
+        [currentIndex]: isCorrect ? 'correct' : 'incorrect',
+      }));
+      setIsGrading(false);
+    }, 700);
+  }
+
+  function handleNext() {
+    setFeedback(null);
+    if (currentIndex < questions.length - 1) {
+      setCurrentIndex(prev => prev + 1);
+      return;
+    }
+    setViewMode('score');
+  }
+
+  function handlePrevious() {
+    if (feedback) {
+      setFeedback(null);
+    }
+
+    if (currentIndex > 0) {
+      setCurrentIndex(prev => prev - 1);
+    }
+  }
+
+  async function handleAskAI(text = currentQuestion?.text || '', answer = answers[currentIndex]) {
+    setExplanationModal({ isOpen: true, isLoading: true, text: '' });
+    const correctAnswer = String(currentQuestion.correctAnswer ?? '');
+    let prompt = `I'm a Grade 8 student.\nQuestion: "${text}"\nCorrect Answer: "${correctAnswer}"`;
+    if (answer) {
+      prompt += `\nMy Answer: "${answer}"`;
+    } else {
+      prompt += '\nI did not answer the question.';
+    }
+    prompt += '\nCan you explain why the correct answer is right and, if I was wrong, why? Keep it brief and fun without markdown bolding.';
+
+    try {
+      const response = await askHomeworkHelper(prompt, [], 'explanation');
+      setExplanationModal({
+        isOpen: true,
+        isLoading: false,
+        text: response,
+      });
+    } catch (error) {
+      console.error('AI explanation request failed', error);
+      setExplanationModal({
+        isOpen: true,
+        isLoading: false,
+        text: 'I could not load the explanation right now. Please try again in a moment.',
+      });
+    }
+  }
+
+  function resetQuiz() {
+    setCurrentIndex(0);
+    setAnswers({});
+    setResults({});
+    setFeedback(null);
+    setViewMode('quiz');
+  }
+
+  if (viewMode === 'score') {
+    const score = Object.values(results).filter(item => item === 'correct').length;
+    const percentage = Math.round((score / questions.length) * 100);
+    const isPass = percentage >= 50;
+
+    return (
+      <View style={styles.resultsBackdrop}>
+        <View style={styles.resultsCard}>
+          {percentage === 100 ? (
+            <Trophy size={84} color="#EAB308" />
+          ) : isPass ? (
+            <PartyPopper size={84} color="#22C55E" />
+          ) : (
+            <Frown size={84} color="#F97316" />
+          )}
+
+          <Text style={styles.resultsTitle}>
+            {isPass ? 'Quiz Completed!' : 'Keep Practicing!'}
+          </Text>
+          <Text style={styles.resultsScore}>
+            You scored <Text style={styles.resultsPercent}>{percentage}%</Text>
+          </Text>
+
+          <View style={styles.resultsDots}>
+            {questions.map((_, idx) => (
+              <View
+                key={idx}
+                style={[
+                  styles.resultDot,
+                  results[idx] === 'correct' ? styles.resultDotGood : styles.resultDotBad,
+                ]}
+              />
+            ))}
+          </View>
+
+          <Pressable
+            onPress={() => {
+              if (onFinish) {
+                onFinish({ score, total: questions.length, percentage });
+                return;
+              }
+              onClose();
+            }}
+            style={styles.resultsPrimaryButton}>
+            <Text style={styles.resultsPrimaryText}>Done</Text>
+          </Pressable>
+
+          <Pressable onPress={resetQuiz} style={styles.resultsSecondaryButton}>
+            <RotateCcw size={16} color="#4B5563" />
+            <Text style={styles.resultsSecondaryText}>Try Again</Text>
+          </Pressable>
+
+          <Pressable onPress={() => setViewMode('review')} style={styles.resultsReviewButton}>
+            <Eye size={16} color="#2563EB" />
+            <Text style={styles.resultsReviewText}>Review Answers</Text>
+          </Pressable>
+        </View>
+      </View>
+    );
+  }
+
+  if (viewMode === 'review') {
+    return (
+      <View style={styles.reviewScreen}>
+        <View style={styles.reviewHeader}>
+          <Pressable onPress={() => setViewMode('score')} style={styles.simpleIconButton}>
+            <ArrowLeft size={22} color="#4B5563" />
+          </Pressable>
+          <Text style={styles.reviewTitle}>Review Answers</Text>
+          <View style={styles.reviewSpacer} />
+        </View>
+
+        <ScrollView contentContainerStyle={styles.reviewContent}>
+          {questions.map((question, idx) => {
+            const status = results[idx];
+            const answer = answers[idx];
+
+            return (
+              <View key={question.id} style={styles.reviewCard}>
+                <View style={styles.reviewCardTop}>
+                  <View
+                    style={[
+                      styles.reviewStatusBadge,
+                      status === 'correct'
+                        ? styles.reviewStatusBadgeGood
+                        : styles.reviewStatusBadgeBad,
+                    ]}>
+                    {status === 'correct' ? (
+                      <Check size={16} color="#16A34A" />
+                    ) : (
+                      <X size={16} color="#DC2626" />
+                    )}
+                  </View>
+                  <View style={styles.reviewQuestionWrap}>
+                    <Text style={styles.reviewQuestionIndex}>Question {idx + 1}</Text>
+                    <Text style={styles.reviewQuestionText}>{question.text}</Text>
+                  </View>
+                </View>
+
+                <View style={styles.reviewAnswerBox}>
+                  <Text style={styles.reviewLabel}>Your Answer</Text>
+                  <Text style={styles.reviewAnswerText}>{answer || '(No Answer)'}</Text>
+                </View>
+
+                {status !== 'correct' ? (
+                  <View style={styles.reviewCorrectBox}>
+                    <Text style={styles.reviewLabel}>Correct Answer</Text>
+                    <Text style={styles.reviewAnswerText}>
+                      {String(question.correctAnswer)}
+                    </Text>
+                  </View>
+                ) : null}
+
+                {question.explanation ? (
+                  <View style={styles.reviewExplanationBox}>
+                    <View style={styles.reviewExplanationTop}>
+                      <Text style={styles.reviewExplanationTitle}>Explanation</Text>
+                      <Pressable
+                        onPress={() => handleAskAI(question.text, answer)}
+                        style={styles.reviewAiButton}>
+                        <Sparkles size={14} color="#2563EB" />
+                      </Pressable>
+                    </View>
+                    <Text style={styles.reviewExplanationText}>{question.explanation}</Text>
+                  </View>
+                ) : null}
+              </View>
+            );
+          })}
+        </ScrollView>
+      </View>
+    );
+  }
+
+  const options =
+    currentQuestion.type === 'TRUE_FALSE' &&
+    (!currentQuestion.options || currentQuestion.options.length === 0)
+      ? ['True', 'False']
+      : currentQuestion.options || [];
+
+  return (
+    <View style={styles.screen}>
+      <View style={styles.heroBackdrop}>
+        <Pressable onPress={onClose} style={styles.heroBackButton}>
+          <ArrowLeft size={24} color="#9CA3AF" />
+        </Pressable>
+        <Text style={styles.heroGrade}>8</Text>
+        <Text style={styles.heroSubject}>{subjectName}</Text>
+      </View>
+
+      <View style={styles.quizCard}>
+        <View style={styles.quizHeader}>
+          <Pressable onPress={onClose} style={styles.simpleIconButton}>
+            <X size={22} color="#6B7280" />
+          </Pressable>
+
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.stepRow}>
+            {questions.map((_, idx) => {
+              const status = results[idx];
+              const isActive = idx === currentIndex;
+
+              return (
+                <View
+                  key={idx}
+                  style={[
+                    styles.stepChip,
+                    isActive && styles.stepChipActive,
+                    !isActive && status === 'correct' && styles.stepChipCorrect,
+                    !isActive && status === 'incorrect' && styles.stepChipIncorrect,
+                  ]}>
+                  {isActive ? (
+                    <Text style={styles.stepChipTextActive}>{idx + 1}</Text>
+                  ) : status === 'correct' ? (
+                    <Check size={18} color="#FFFFFF" />
+                  ) : status === 'incorrect' ? (
+                    <X size={18} color="#FFFFFF" />
+                  ) : (
+                    <Text style={styles.stepChipText}>{idx + 1}</Text>
+                  )}
+                </View>
+              );
+            })}
+          </ScrollView>
+        </View>
+
+        <View style={styles.quizBody}>
+          <Text style={styles.questionCount}>
+            QUESTION {currentIndex + 1} OF {questions.length}
+          </Text>
+          <Text style={styles.questionText}>{currentQuestion.text}</Text>
+
+          {(currentQuestion.type === 'MCQ' || currentQuestion.type === 'TRUE_FALSE') &&
+            options.map(option => {
+              const selected = answers[currentIndex] === option;
+              const correct =
+                String(option).toLowerCase() ===
+                String(currentQuestion.correctAnswer).toLowerCase();
+
+              return (
+                <Pressable
+                  key={option}
+                  disabled={!!feedback}
+                  onPress={() => setAnswer(option)}
+                  style={[
+                    styles.optionCard,
+                    selected && !feedback && styles.optionCardSelected,
+                    feedback && correct && styles.optionCardCorrect,
+                    feedback && selected && !correct && styles.optionCardIncorrect,
+                  ]}>
+                  <Text
+                    style={[
+                      styles.optionText,
+                      selected && !feedback && styles.optionTextSelected,
+                    ]}>
+                    {option}
+                  </Text>
+                </Pressable>
+              );
+            })}
+
+          {AUDIO_TYPES.has(currentQuestion.type) ? (
+            <View style={styles.audioWrap}>
+              {voiceError ? (
+                <View style={styles.voiceErrorBanner}>
+                  <Text style={styles.voiceErrorText}>{voiceError}</Text>
+                </View>
+              ) : null}
+
+              {answers[currentIndex] ? (
+                <View style={styles.recordedAnswerWrap}>
+                  <View style={styles.recordedAnswerCard}>
+                    <Text style={styles.recordedAnswerText}>{answers[currentIndex]}</Text>
+                  </View>
+                  {!feedback ? (
+                    <Pressable onPress={handleRedo} style={styles.redoButton}>
+                      <RotateCcw size={16} color="#EF4444" />
+                    </Pressable>
+                  ) : null}
+                </View>
+              ) : isRecording ? (
+                <View style={styles.recordState}>
+                  <Text style={styles.recordTimer}>00:{timeLeft.toString().padStart(2, '0')}</Text>
+                  <Pressable onPress={stopRecording} style={styles.stopButton}>
+                    <Square size={15} color="#DC2626" fill="#DC2626" />
+                    <Text style={styles.stopButtonText}>Stop</Text>
+                  </Pressable>
+                </View>
+              ) : isTranscribing ? (
+                <View style={styles.recordState}>
+                  <ActivityIndicator size="large" color="#2563EB" />
+                  <Text style={styles.transcribingText}>Transcribing...</Text>
+                </View>
+              ) : (
+                <Pressable
+                  onPress={() => {
+                    startRecording().catch(() => undefined);
+                  }}
+                  style={styles.recordButton}>
+                  <Mic size={24} color="#FFFFFF" />
+                  <Text style={styles.recordButtonText}>Record Answer</Text>
+                </Pressable>
+              )}
+
+              {!answers[currentIndex] ? (
+                <TextInput
+                  multiline
+                  placeholder="Or type your answer here..."
+                  placeholderTextColor="#9CA3AF"
+                  value={answers[currentIndex] || ''}
+                  onChangeText={setAnswer}
+                  style={styles.answerInput}
+                />
+              ) : null}
+            </View>
+          ) : null}
+
+          {feedback ? (
+            <View
+              style={[
+                styles.feedbackCard,
+                feedback === 'correct'
+                  ? styles.feedbackCardGood
+                  : styles.feedbackCardBad,
+              ]}>
+              <View style={styles.feedbackTop}>
+                {feedback === 'correct' ? (
+                  <Check size={18} color="#15803D" />
+                ) : (
+                  <AlertCircle size={18} color="#B45309" />
+                )}
+                <Text style={styles.feedbackTitle}>
+                  {feedback === 'correct' ? 'Correct' : 'Needs another look'}
+                </Text>
+                <Pressable onPress={() => handleAskAI()} style={styles.feedbackAiButton}>
+                  <Sparkles size={14} color="#2563EB" />
+                </Pressable>
+              </View>
+              <Text style={styles.feedbackText}>{currentQuestion.explanation}</Text>
+            </View>
+          ) : null}
+        </View>
+
+        <View style={styles.footer}>
+          <Pressable
+            disabled={currentIndex === 0}
+            onPress={handlePrevious}
+            style={[styles.footerSecondaryButton, currentIndex === 0 && styles.footerDisabled]}>
+            <Text style={styles.footerSecondaryText}>Previous</Text>
+          </Pressable>
+
+          {!feedback ? (
+            <Pressable
+              disabled={!answers[currentIndex] || isRecording || isTranscribing || isGrading}
+              onPress={checkAnswer}
+              style={[
+                styles.footerPrimaryButton,
+                (!answers[currentIndex] || isRecording || isTranscribing || isGrading) &&
+                  styles.footerPrimaryDisabled,
+              ]}>
+              <Text style={styles.footerPrimaryText}>
+                {isGrading ? 'Checking...' : 'Check Answer'}
+              </Text>
+            </Pressable>
+          ) : (
+            <Pressable onPress={handleNext} style={styles.footerPrimaryButton}>
+              <Text style={styles.footerPrimaryText}>
+                {currentIndex === questions.length - 1 ? 'Finish Quiz' : 'Next Question'}
+              </Text>
+            </Pressable>
+          )}
+        </View>
+      </View>
+
+      <Modal
+        animationType="fade"
+        transparent
+        visible={!!explanationModal?.isOpen}
+        onRequestClose={() => setExplanationModal(null)}>
+        <View style={styles.modalBackdrop}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setExplanationModal(null)} />
+          <View style={styles.modalCard}>
+            <Pressable onPress={() => setExplanationModal(null)} style={styles.modalClose}>
+              <X size={18} color="#9CA3AF" />
+            </Pressable>
+            <View style={styles.modalHead}>
+              <View style={styles.modalBadge}>
+                <Sparkles size={18} color="#FFFFFF" />
+              </View>
+              <Text style={styles.modalTitle}>AI Tutor</Text>
+            </View>
+            <View style={styles.modalBody}>
+              <Text style={styles.modalText}>
+                {explanationModal?.isLoading ? 'Loading explanation...' : explanationModal?.text}
+              </Text>
+            </View>
+            {!explanationModal?.isLoading ? (
+              <Pressable onPress={() => setExplanationModal(null)}>
+                <Text style={styles.modalDone}>Got it</Text>
+              </Pressable>
+            ) : null}
+          </View>
+        </View>
+      </Modal>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  screen: {
+    flex: 1,
+    backgroundColor: '#1F4A93',
+  },
+  heroBackdrop: {
+    alignItems: 'center',
+    paddingTop: 26,
+    paddingBottom: 78,
+  },
+  heroBackButton: {
+    position: 'absolute',
+    left: 20,
+    top: 30,
+    width: 40,
+    height: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  heroGrade: {
+    color: 'rgba(255,255,255,0.75)',
+    fontSize: 38,
+    fontWeight: '900',
+  },
+  heroSubject: {
+    color: 'rgba(255,255,255,0.42)',
+    fontSize: 28,
+    fontWeight: '500',
+    marginTop: 2,
+  },
+  quizBackdrop: {
+    flex: 1,
+    backgroundColor: '#224891',
+    padding: 18,
+  },
+  quizSheet: {
+    flex: 1,
+    backgroundColor: '#F6F7F8',
+    borderRadius: 28,
+    overflow: 'hidden',
+  },
+  quizBackButton: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  quizHeaderSpacer: {
+    flex: 1,
+  },
+  emptyState: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 12,
+    paddingHorizontal: 28,
+  },
+  emptyTitle: {
+    color: '#0F172A',
+    fontSize: 24,
+    fontWeight: '900',
+    textAlign: 'center',
+  },
+  emptyBody: {
+    color: '#64748B',
+    fontSize: 15,
+    lineHeight: 22,
+    textAlign: 'center',
+  },
+  quizCard: {
+    flex: 1,
+    marginHorizontal: 14,
+    marginTop: -20,
+    marginBottom: 14,
+    backgroundColor: '#F6F7F8',
+    borderRadius: 28,
+    overflow: 'hidden',
+    shadowColor: '#000000',
+    shadowOpacity: 0.1,
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 4,
+  },
+  quizHeader: {
+    paddingHorizontal: 18,
+    paddingTop: 18,
+    paddingBottom: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#E5E7EB',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+  },
+  simpleIconButton: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  stepRow: {
+    gap: 10,
+    alignItems: 'center',
+    paddingRight: 8,
+  },
+  stepChip: {
+    width: 54,
+    height: 54,
+    borderRadius: 999,
+    backgroundColor: '#D4D7DF',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  stepChipActive: {
+    backgroundColor: '#3B82F6',
+  },
+  stepChipCorrect: {
+    backgroundColor: '#22C55E',
+  },
+  stepChipIncorrect: {
+    backgroundColor: '#EF4444',
+  },
+  stepChipText: {
+    color: '#374151',
+    fontSize: 18,
+    fontWeight: '700',
+  },
+  stepChipTextActive: {
+    color: '#FFFFFF',
+    fontSize: 18,
+    fontWeight: '900',
+  },
+  quizBody: {
+    flex: 1,
+    paddingHorizontal: 18,
+    paddingTop: 18,
+    gap: 16,
+  },
+  questionCount: {
+    color: '#6B7280',
+    fontSize: 14,
+    fontWeight: '700',
+    letterSpacing: 1.1,
+    textTransform: 'uppercase',
+  },
+  questionText: {
+    color: '#111827',
+    fontSize: 28,
+    lineHeight: 44,
+    fontWeight: '900',
+    marginBottom: 6,
+  },
+  optionCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 22,
+    borderWidth: 1,
+    borderColor: '#DADADA',
+    paddingHorizontal: 18,
+    paddingVertical: 24,
+  },
+  optionCardSelected: {
+    borderColor: '#3B82F6',
+    backgroundColor: '#EEF4FF',
+  },
+  optionCardCorrect: {
+    borderColor: '#86EFAC',
+    backgroundColor: '#F0FDF4',
+  },
+  optionCardIncorrect: {
+    borderColor: '#FCA5A5',
+    backgroundColor: '#FEF2F2',
+  },
+  optionText: {
+    color: '#111827',
+    fontSize: 18,
+    lineHeight: 30,
+    fontWeight: '500',
+  },
+  optionTextSelected: {
+    color: '#1D4ED8',
+    fontWeight: '700',
+  },
+  audioWrap: {
+    gap: 14,
+  },
+  voiceErrorBanner: {
+    backgroundColor: '#FEF2F2',
+    borderWidth: 1,
+    borderColor: '#FECACA',
+    borderRadius: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  voiceErrorText: {
+    color: '#B91C1C',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  recordButton: {
+    minHeight: 60,
+    borderRadius: 18,
+    backgroundColor: '#2563EB',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+  },
+  recordButtonText: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '800',
+  },
+  recordState: {
+    alignItems: 'center',
+    gap: 12,
+    paddingVertical: 20,
+  },
+  recordTimer: {
+    color: '#DC2626',
+    fontSize: 28,
+    fontWeight: '900',
+  },
+  stopButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: '#FEE2E2',
+    borderRadius: 14,
+    paddingHorizontal: 18,
+    paddingVertical: 12,
+  },
+  stopButtonText: {
+    color: '#DC2626',
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  transcribingText: {
+    color: '#6B7280',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  recordedAnswerWrap: {
+    position: 'relative',
+  },
+  recordedAnswerCard: {
+    borderRadius: 20,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#DADADA',
+    padding: 16,
+  },
+  recordedAnswerText: {
+    color: '#111827',
+    fontSize: 16,
+    lineHeight: 26,
+  },
+  redoButton: {
+    position: 'absolute',
+    top: -10,
+    right: -10,
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  answerInput: {
+    minHeight: 118,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: '#DADADA',
+    backgroundColor: '#FFFFFF',
+    color: '#111827',
+    fontSize: 16,
+    lineHeight: 24,
+    padding: 16,
+    textAlignVertical: 'top',
+  },
+  feedbackCard: {
+    borderRadius: 18,
+    padding: 14,
+    borderWidth: 1,
+  },
+  feedbackCardGood: {
+    backgroundColor: '#F0FDF4',
+    borderColor: '#BBF7D0',
+  },
+  feedbackCardBad: {
+    backgroundColor: '#FFF7ED',
+    borderColor: '#FED7AA',
+  },
+  feedbackTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginBottom: 8,
+  },
+  feedbackTitle: {
+    flex: 1,
+    color: '#111827',
+    fontSize: 15,
+    fontWeight: '800',
+  },
+  feedbackAiButton: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  feedbackText: {
+    color: '#374151',
+    fontSize: 14,
+    lineHeight: 22,
+  },
+  footer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 18,
+    paddingVertical: 18,
+    gap: 14,
+  },
+  footerSecondaryButton: {
+    minWidth: 120,
+    minHeight: 58,
+    borderRadius: 16,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#DADADA',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 18,
+  },
+  footerSecondaryText: {
+    color: '#111827',
+    fontSize: 16,
+    fontWeight: '500',
+  },
+  footerPrimaryButton: {
+    flex: 1,
+    minHeight: 58,
+    borderRadius: 16,
+    backgroundColor: '#8FE1AF',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 18,
+  },
+  footerPrimaryDisabled: {
+    backgroundColor: '#D1D5DB',
+  },
+  footerPrimaryText: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '800',
+  },
+  footerDisabled: {
+    opacity: 0.45,
+  },
+  resultsBackdrop: {
+    flex: 1,
+    backgroundColor: '#F8FAFC',
+    padding: 18,
+  },
+  resultsCard: {
+    flex: 1,
+    borderRadius: 34,
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 30,
+  },
+  resultsTitle: {
+    color: '#111827',
+    fontSize: 28,
+    fontWeight: '900',
+    marginTop: 20,
+  },
+  resultsScore: {
+    color: '#6B7280',
+    fontSize: 16,
+    fontWeight: '600',
+    marginTop: 8,
+    marginBottom: 20,
+  },
+  resultsPercent: {
+    color: '#111827',
+    fontSize: 28,
+    fontWeight: '900',
+  },
+  resultsDots: {
+    width: '100%',
+    maxWidth: 280,
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 22,
+  },
+  resultDot: {
+    flex: 1,
+    height: 8,
+    borderRadius: 999,
+  },
+  resultDotGood: {
+    backgroundColor: '#22C55E',
+  },
+  resultDotBad: {
+    backgroundColor: '#EF4444',
+  },
+  resultsPrimaryButton: {
+    width: '100%',
+    maxWidth: 280,
+    minHeight: 56,
+    borderRadius: 18,
+    backgroundColor: '#111827',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 12,
+  },
+  resultsPrimaryText: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '800',
+  },
+  resultsSecondaryButton: {
+    width: '100%',
+    maxWidth: 280,
+    minHeight: 56,
+    borderRadius: 18,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    marginBottom: 12,
+  },
+  resultsSecondaryText: {
+    color: '#4B5563',
+    fontSize: 16,
+    fontWeight: '800',
+  },
+  resultsReviewButton: {
+    width: '100%',
+    maxWidth: 280,
+    minHeight: 56,
+    borderRadius: 18,
+    backgroundColor: '#EFF6FF',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  resultsReviewText: {
+    color: '#2563EB',
+    fontSize: 16,
+    fontWeight: '800',
+  },
+  reviewScreen: {
+    flex: 1,
+    backgroundColor: '#F3F4F6',
+    padding: 16,
+  },
+  reviewHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingBottom: 12,
+  },
+  reviewTitle: {
+    color: '#111827',
+    fontSize: 22,
+    fontWeight: '900',
+  },
+  reviewSpacer: {
+    width: 38,
+  },
+  reviewContent: {
+    gap: 16,
+    paddingBottom: 24,
+  },
+  reviewCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 22,
+    padding: 18,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    gap: 12,
+  },
+  reviewCardTop: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  reviewStatusBadge: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  reviewStatusBadgeGood: {
+    backgroundColor: '#DCFCE7',
+  },
+  reviewStatusBadgeBad: {
+    backgroundColor: '#FEE2E2',
+  },
+  reviewQuestionWrap: {
+    flex: 1,
+  },
+  reviewQuestionIndex: {
+    color: '#6B7280',
+    fontSize: 11,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+    marginBottom: 4,
+  },
+  reviewQuestionText: {
+    color: '#111827',
+    fontSize: 16,
+    lineHeight: 24,
+    fontWeight: '700',
+  },
+  reviewAnswerBox: {
+    borderRadius: 16,
+    backgroundColor: '#F9FAFB',
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    padding: 14,
+  },
+  reviewCorrectBox: {
+    borderRadius: 16,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    padding: 14,
+  },
+  reviewLabel: {
+    color: '#6B7280',
+    fontSize: 11,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+    marginBottom: 4,
+  },
+  reviewAnswerText: {
+    color: '#1F2937',
+    fontSize: 14,
+    lineHeight: 22,
+  },
+  reviewExplanationBox: {
+    borderRadius: 16,
+    backgroundColor: '#EFF6FF',
+    borderWidth: 1,
+    borderColor: '#DBEAFE',
+    padding: 14,
+  },
+  reviewExplanationTop: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 6,
+  },
+  reviewExplanationTitle: {
+    color: '#1D4ED8',
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  reviewAiButton: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  reviewExplanationText: {
+    color: '#1E3A8A',
+    fontSize: 13,
+    lineHeight: 20,
+  },
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+  },
+  modalCard: {
+    width: '100%',
+    maxWidth: 420,
+    borderRadius: 28,
+    backgroundColor: '#FFFFFF',
+    padding: 24,
+  },
+  modalClose: {
+    position: 'absolute',
+    top: 16,
+    right: 16,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  modalHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginBottom: 18,
+  },
+  modalBadge: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#2563EB',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  modalTitle: {
+    color: '#111827',
+    fontSize: 18,
+    fontWeight: '800',
+  },
+  modalBody: {
+    minHeight: 110,
+    borderRadius: 18,
+    backgroundColor: '#F9FAFB',
+    padding: 16,
+    marginBottom: 16,
+  },
+  modalText: {
+    color: '#374151',
+    fontSize: 14,
+    lineHeight: 22,
+  },
+  modalDone: {
+    color: '#1D4ED8',
+    fontSize: 14,
+    fontWeight: '800',
+    textAlign: 'center',
+  },
+});

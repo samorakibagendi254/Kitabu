@@ -1,0 +1,71 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: kitabu-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: kitabu
+      POSTGRES_PASSWORD: change-me
+      POSTGRES_DB: kitabu_api
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./apps/api/sql:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "127.0.0.1:55432:5432"
+
+  redis:
+    image: redis:7-alpine
+    container_name: kitabu-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    ports:
+      - "127.0.0.1:6379:6379"
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    container_name: kitabu-api
+    restart: unless-stopped
+    env_file:
+      - ./apps/api/.env.example
+    depends_on:
+      - postgres
+      - redis
+    ports:
+      - "127.0.0.1:4000:4000"
+
+  worker:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    container_name: kitabu-worker
+    restart: unless-stopped
+    env_file:
+      - ./apps/api/.env.example
+    command: ["node", "dist/worker.js"]
+    depends_on:
+      - postgres
+      - redis
+
+  caddy:
+    image: caddy:2.8-alpine
+    container_name: kitabu-caddy
+    restart: unless-stopped
+    depends_on:
+      - api
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./infra/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  postgres-data:
+  redis-data:
+  caddy-data:
+  caddy-config:

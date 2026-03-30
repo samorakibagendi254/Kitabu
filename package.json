@@ -1,0 +1,13 @@
+{
+  "name": "kitabu-ai",
+  "private": true,
+  "version": "1.0.0",
+  "workspaces": [
+    "apps/api"
+  ],
+  "scripts": {
+    "dev:api": "npm run dev -w apps/api",
+    "build": "npm run build -w apps/api",
+    "check": "npm run typecheck -w apps/api"
+  }
+}

@@ -1,0 +1,16 @@
+import org.gradle.api.initialization.resolve.RepositoriesMode
+
+pluginManagement { includeBuild("../node_modules/@react-native/gradle-plugin") }
+plugins { id("com.facebook.react.settings") }
+extensions.configure(com.facebook.react.ReactSettingsExtension){ ex -> ex.autolinkLibrariesFromCommand() }
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.PREFER_SETTINGS)
+    repositories {
+        maven { url = uri("../node_modules/@react-native-async-storage/async-storage/android/local_repo") }
+        google()
+        mavenCentral()
+    }
+}
+rootProject.name = 'KitabuNativeApp'
+include ':app'
+includeBuild('../node_modules/@react-native/gradle-plugin')
