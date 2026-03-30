@@ -1,0 +1,47 @@
+name: Deploy API
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment
+        required: true
+        type: choice
+        options:
+          - staging
+          - production
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ github.event_name == 'workflow_dispatch' && inputs.environment || 'production' }}
+    concurrency:
+      group: deploy-api-${{ github.ref }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare deployment bundle
+        run: tar -czf kitabu-api-deploy.tar.gz apps api-openapi.json docker-compose.yml infra package.json package-lock.json tsconfig.base.json
+      - name: Upload bundle
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.HETZNER_HOST }}
+          username: ${{ secrets.HETZNER_USER }}
+          key: ${{ secrets.HETZNER_SSH_KEY }}
+          source: kitabu-api-deploy.tar.gz
+          target: ${{ secrets.HETZNER_APP_PATH }}
+      - name: Deploy on Hetzner
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.HETZNER_HOST }}
+          username: ${{ secrets.HETZNER_USER }}
+          key: ${{ secrets.HETZNER_SSH_KEY }}
+          script: |
+            set -euo pipefail
+            cd "${{ secrets.HETZNER_APP_PATH }}"
+            tar -xzf kitabu-api-deploy.tar.gz
+            docker compose up -d --build postgres redis api worker caddy
+            curl --fail --silent http://127.0.0.1:4000/health >/dev/null
