@@ -16,23 +16,28 @@ on:
 
 jobs:
   deploy:
-    runs-on: ubuntu-latest
+    runs-on:
+      - self-hosted
+      - linux
+      - x64
+      - kitabu-prod
     environment: ${{ github.event_name == 'workflow_dispatch' && inputs.environment || 'production' }}
     concurrency:
       group: deploy-api-${{ github.ref }}
       cancel-in-progress: true
     steps:
+      - uses: actions/checkout@v4
+      - name: Sync code to live directory
+        run: |
+          rsync -a --delete \
+            --exclude '.git' \
+            --exclude 'node_modules' \
+            --exclude 'apps/api/.env' \
+            --exclude '.secrets' \
+            ./ /home/samora/deploy/kitabu-live/
       - name: Deploy on Hetzner
-        uses: appleboy/ssh-action@v1.2.0
-        with:
-          host: ${{ secrets.HETZNER_HOST }}
-          username: ${{ secrets.HETZNER_USER }}
-          key: ${{ secrets.HETZNER_SSH_KEY }}
-          script: |
-            set -euo pipefail
-            cd "${{ secrets.HETZNER_APP_PATH }}"
-            git fetch --all --prune
-            git checkout main
-            git reset --hard origin/main
-            docker compose up -d --build postgres redis api worker caddy
-            curl --fail --silent http://127.0.0.1:4000/health >/dev/null
+        run: |
+          set -euo pipefail
+          cd /home/samora/deploy/kitabu-live
+          docker compose up -d --build postgres redis api worker caddy
+          curl --fail --silent http://127.0.0.1:4000/health >/dev/null
