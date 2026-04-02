@@ -22,17 +22,6 @@ jobs:
       group: deploy-api-${{ github.ref }}
       cancel-in-progress: true
     steps:
-      - uses: actions/checkout@v4
-      - name: Prepare deployment bundle
-        run: tar -czf kitabu-api-deploy.tar.gz apps api-openapi.json docker-compose.yml infra package.json package-lock.json tsconfig.base.json
-      - name: Upload bundle
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.HETZNER_HOST }}
-          username: ${{ secrets.HETZNER_USER }}
-          key: ${{ secrets.HETZNER_SSH_KEY }}
-          source: kitabu-api-deploy.tar.gz
-          target: ${{ secrets.HETZNER_APP_PATH }}
       - name: Deploy on Hetzner
         uses: appleboy/ssh-action@v1.2.0
         with:
@@ -42,6 +31,8 @@ jobs:
           script: |
             set -euo pipefail
             cd "${{ secrets.HETZNER_APP_PATH }}"
-            tar -xzf kitabu-api-deploy.tar.gz
+            git fetch --all --prune
+            git checkout main
+            git reset --hard origin/main
             docker compose up -d --build postgres redis api worker caddy
             curl --fail --silent http://127.0.0.1:4000/health >/dev/null
