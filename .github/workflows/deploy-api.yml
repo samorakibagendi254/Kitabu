@@ -40,4 +40,13 @@ jobs:
           set -euo pipefail
           cd /home/samora/deploy/kitabu-live
           docker compose up -d --build postgres redis api worker caddy
-          curl --fail --silent http://127.0.0.1:4000/health >/dev/null
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:4000/health >/dev/null; then
+              exit 0
+            fi
+
+            sleep 2
+          done
+
+          docker compose logs api --tail=120
+          exit 1
