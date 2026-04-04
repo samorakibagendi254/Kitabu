@@ -3,5 +3,45 @@
 }
 
 app.kitabu.ai {
-  reverse_proxy api:4000
+  reverse_proxy 127.0.0.1:4000
+}
+
+mjanjez.kitabu.ai {
+  reverse_proxy 127.0.0.1:4101
+}
+
+storypod.kitabu.ai {
+  reverse_proxy 127.0.0.1:4102
+}
+
+ndiziflix.kitabu.ai {
+  @backend path /api/* /health
+  handle @backend {
+    reverse_proxy 127.0.0.1:4104
+  }
+  handle {
+    reverse_proxy 127.0.0.1:4103
+  }
+}
+
+digitalbrain.kitabu.ai {
+  @backend path /auth* /chat* /knowledge* /user* /payment* /uploads* /health
+  handle @backend {
+    reverse_proxy 127.0.0.1:4106
+  }
+  handle {
+    reverse_proxy 127.0.0.1:4105
+  }
+}
+
+familydiary.kitabu.ai {
+  reverse_proxy 127.0.0.1:4107
+}
+
+agentrobin.kitabu.ai {
+  reverse_proxy 127.0.0.1:18791
+}
+
+sherehe.kitabu.ai {
+  reverse_proxy 127.0.0.1:4108
 }
